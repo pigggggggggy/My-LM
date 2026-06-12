@@ -113,7 +113,7 @@ def run_swiglu(
         })
     return swiglu(in_features)
 
-
+from cs336_basics.model import scaled_dot_product_attention
 def run_scaled_dot_product_attention(
     Q: Float[Tensor, " ... queries d_k"],
     K: Float[Tensor, " ... keys d_k"],
@@ -132,7 +132,7 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    return scaled_dot_product_attention(Q,K,V,mask)
 
 
 def run_multihead_self_attention(
@@ -168,7 +168,7 @@ def run_multihead_self_attention(
     """
     raise NotImplementedError
 
-
+from cs336_basics.model import Multihead_self_attention
 def run_multihead_self_attention_with_rope(
     d_model: int,
     num_heads: int,
@@ -206,7 +206,40 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_model"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    head_dim = d_model // num_heads
+
+    rope = RotaryPositionalEmbedding(
+        theta=theta,
+        d_k=head_dim,
+        max_seq_len=max_seq_len,
+        device=in_features.device,
+    )
+
+    mha = Multihead_self_attention(
+        d_model=d_model,
+        num_heads=num_heads,
+        rope=rope,
+    )
+
+    mha = mha.to(device=in_features.device, dtype=in_features.dtype)
+
+    with torch.no_grad():
+        mha.q_proj.weight.copy_(q_proj_weight)
+        mha.k_proj.weight.copy_(k_proj_weight)
+        mha.v_proj.weight.copy_(v_proj_weight)
+        mha.output_proj.weight.copy_(o_proj_weight)
+
+    original_shape = in_features.shape
+    seq_len = original_shape[-2]
+
+    x = in_features.reshape(-1, seq_len, d_model)
+
+    if token_positions is not None:
+        token_positions = token_positions.reshape(-1, seq_len)
+
+    output = mha(x, token_positions)
+
+    return output.reshape(*original_shape)
 
 from cs336_basics.model import RotaryPositionalEmbedding
 def run_rope(

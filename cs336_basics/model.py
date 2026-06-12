@@ -159,3 +159,85 @@ def softmax(x: torch.Tensor, dim: int) -> torch.Tensor:
 
     return exp_x / sum_exp
     
+    
+def scaled_dot_product_attention(
+    queries: torch.Tensor,
+    keys: torch.Tensor,
+    values: torch.Tensor,
+    mask: torch.Tensor
+)->torch.Tensor:
+    d_k=queries.shape[-1]
+    scores=queries@keys.transpose(-2,-1)
+    scores=scores/math.sqrt(d_k)
+    
+    if mask is not None:
+        while mask.ndim<scores.ndim:
+            mask=mask.unsqueeze(0)
+        mask= mask.to(device=scores.device, dtype=torch.bool)
+        scores=scores.masked_fill(~mask,float("-inf"))
+    attention_probs = softmax(scores,dim=-1)
+    output=attention_probs@values
+    return output
+
+
+class Multihead_self_attention(nn.Module):
+    def __init__(self,d_model: int, num_heads: int, rope=None):
+        super().__init__()
+        self.d_model=d_model
+        self.num_heads=num_heads
+        self.rope=rope
+        self.head_dim=d_model//num_heads
+        assert d_model%num_heads==0
+        self.q_proj = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        self.output_proj = nn.Linear(d_model, d_model, bias=False)
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
+        batch_size, seq_len, d_model = x.shape
+
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+
+        # (batch_size, seq_len, d_model)
+        # -> (batch_size, seq_len, num_heads, head_dim)
+        q = q.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        k = k.view(batch_size, seq_len, self.num_heads, self.head_dim)
+        v = v.view(batch_size, seq_len, self.num_heads, self.head_dim)
+
+        # -> (batch_size, num_heads, seq_len, head_dim)
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        # RoPE 只作用在 q 和 k 上
+        if self.rope is not None:
+            if token_positions is None:
+                token_positions = torch.arange(seq_len, device=x.device)
+
+            q = self.rope(q, token_positions)
+            k = self.rope(k, token_positions)
+
+        # causal mask: True 表示可以 attend
+        causal_mask = torch.tril(
+            torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device)
+        )
+
+        attn_output = scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            causal_mask,
+        )
+
+        # (batch_size, num_heads, seq_len, head_dim)
+        # -> (batch_size, seq_len, num_heads, head_dim)
+        attn_output = attn_output.transpose(1, 2)
+
+        # -> (batch_size, seq_len, d_model)
+        attn_output = attn_output.contiguous().view(batch_size, seq_len, d_model)
+
+        output = self.output_proj(attn_output)
+
+        return output
+        
